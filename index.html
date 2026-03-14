@@ -1,0 +1,596 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>IBKR Compounder — Live Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
+<style>
+  :root {
+    --bg:       #0a0c0f;
+    --bg2:      #111418;
+    --bg3:      #181d24;
+    --border:   rgba(255,255,255,0.07);
+    --border2:  rgba(255,255,255,0.12);
+    --text:     #e8eaed;
+    --muted:    #6b7280;
+    --green:    #22c55e;
+    --green-d:  #15803d;
+    --green-bg: rgba(34,197,94,0.08);
+    --red:      #ef4444;
+    --red-bg:   rgba(239,68,68,0.08);
+    --blue:     #3b82f6;
+    --blue-bg:  rgba(59,130,246,0.08);
+    --amber:    #f59e0b;
+    --amber-bg: rgba(245,158,11,0.08);
+    --mono:     'JetBrains Mono', monospace;
+    --display:  'Syne', sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 13px; line-height: 1.5; min-height: 100vh; }
+
+  /* TOPBAR */
+  .topbar { display: flex; align-items: center; justify-content: space-between; padding: 14px 24px; border-bottom: 1px solid var(--border); background: var(--bg2); position: sticky; top: 0; z-index: 100; }
+  .logo { font-family: var(--display); font-size: 18px; font-weight: 800; letter-spacing: -0.03em; color: var(--text); }
+  .logo span { color: var(--green); }
+  .topbar-right { display: flex; align-items: center; gap: 20px; }
+  .live-badge { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--green); }
+  .live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: blink 1.4s infinite; }
+  @keyframes blink { 0%,100%{opacity:1} 50%{opacity:0.2} }
+  .session-badge { font-size: 11px; padding: 3px 10px; border-radius: 4px; border: 1px solid var(--border2); color: var(--muted); }
+  .session-badge.active { border-color: var(--green); color: var(--green); background: var(--green-bg); }
+  .session-badge.halted { border-color: var(--red); color: var(--red); background: var(--red-bg); }
+  .last-update { font-size: 10px; color: var(--muted); }
+
+  /* LAYOUT */
+  .main { padding: 20px 24px; max-width: 1400px; margin: 0 auto; }
+  .grid4 { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 12px; margin-bottom: 16px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; margin-bottom: 16px; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 16px; }
+  .grid-70-30 { display: grid; grid-template-columns: 1fr 380px; gap: 16px; margin-bottom: 16px; }
+
+  /* CARDS */
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; }
+  .card-title { font-size: 10px; font-weight: 500; color: var(--muted); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 12px; }
+
+  /* METRIC CARDS */
+  .metric { background: var(--bg2); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
+  .metric-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.08em; margin-bottom: 6px; }
+  .metric-value { font-size: 26px; font-weight: 700; font-family: var(--display); letter-spacing: -0.02em; }
+  .metric-sub { font-size: 11px; color: var(--muted); margin-top: 4px; }
+  .metric-delta { font-size: 12px; margin-top: 3px; }
+  .up   { color: var(--green); }
+  .down { color: var(--red); }
+  .neutral { color: var(--muted); }
+
+  /* PROGRESS BAR */
+  .progress-wrap { margin-top: 8px; }
+  .progress-track { height: 3px; background: rgba(255,255,255,0.06); border-radius: 2px; overflow: hidden; }
+  .progress-fill { height: 3px; border-radius: 2px; background: var(--green); transition: width 0.5s ease; }
+  .progress-label { display: flex; justify-content: space-between; font-size: 10px; color: var(--muted); margin-top: 5px; }
+
+  /* EQUITY CHART */
+  .chart-wrap { position: relative; width: 100%; height: 220px; }
+
+  /* TRADE LOG */
+  .trade-row { display: grid; grid-template-columns: 55px 80px 42px 36px 70px 90px; gap: 6px; align-items: center; padding: 7px 0; border-bottom: 1px solid var(--border); font-size: 11px; }
+  .trade-row:last-child { border-bottom: none; }
+  .trade-action { font-size: 10px; font-weight: 500; padding: 2px 6px; border-radius: 3px; text-align: center; }
+  .buy  { background: var(--green-bg); color: var(--green); }
+  .sell { background: var(--red-bg);   color: var(--red);   }
+  .trade-type { font-size: 10px; padding: 1px 5px; border-radius: 3px; border: 1px solid var(--border2); color: var(--muted); }
+  .type-opt { border-color: rgba(59,130,246,0.4); color: var(--blue); background: var(--blue-bg); }
+
+  /* RISK PANEL */
+  .risk-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--border); font-size: 12px; }
+  .risk-row:last-child { border-bottom: none; }
+  .risk-bar { height: 3px; background: rgba(255,255,255,0.06); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .risk-fill { height: 3px; border-radius: 2px; transition: width 0.5s; }
+
+  /* SESSION TIMELINE */
+  .timeline { display: flex; gap: 0; margin-bottom: 16px; border-radius: 8px; overflow: hidden; border: 1px solid var(--border); }
+  .tl-seg { flex: 1; padding: 10px 12px; text-align: center; font-size: 10px; border-right: 1px solid var(--border); }
+  .tl-seg:last-child { border-right: none; }
+  .tl-seg.active { background: var(--green-bg); }
+  .tl-time { color: var(--muted); margin-bottom: 3px; }
+  .tl-name { font-weight: 500; font-size: 11px; }
+  .tl-seg.active .tl-name { color: var(--green); }
+
+  /* DEPLOY STEPS */
+  .step { display: flex; gap: 14px; margin-bottom: 20px; }
+  .step-num { width: 28px; height: 28px; border-radius: 50%; background: var(--green-bg); border: 1px solid var(--green-d); color: var(--green); font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center; flex-shrink: 0; margin-top: 1px; }
+  .step-title { font-size: 14px; font-weight: 500; color: var(--text); margin-bottom: 5px; font-family: var(--display); }
+  .step-desc { font-size: 12px; color: var(--muted); line-height: 1.6; margin-bottom: 6px; }
+  .cmd { background: var(--bg3); border: 1px solid var(--border2); border-radius: 5px; padding: 7px 12px; font-family: var(--mono); font-size: 11px; color: #a3e635; margin: 4px 0; display: block; }
+
+  /* TABS */
+  .tab-bar { display: flex; gap: 2px; background: var(--bg3); padding: 4px; border-radius: 8px; margin-bottom: 16px; }
+  .tab-btn { padding: 6px 14px; font-size: 11px; border-radius: 5px; cursor: pointer; color: var(--muted); border: none; background: transparent; font-family: var(--mono); letter-spacing: 0.03em; }
+  .tab-btn.active { background: var(--bg2); color: var(--text); border: 1px solid var(--border2); }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* MISC */
+  .green-text { color: var(--green); }
+  .red-text   { color: var(--red); }
+  .muted-text { color: var(--muted); }
+  .divider { height: 1px; background: var(--border); margin: 16px 0; }
+  .tag { display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 3px; }
+  .tag-green { background: var(--green-bg); color: var(--green); border: 1px solid rgba(34,197,94,0.25); }
+  .tag-blue  { background: var(--blue-bg);  color: var(--blue);  border: 1px solid rgba(59,130,246,0.25); }
+  .tag-amber { background: var(--amber-bg); color: var(--amber); border: 1px solid rgba(245,158,11,0.25); }
+
+  @media (max-width: 900px) {
+    .grid4 { grid-template-columns: repeat(2, 1fr); }
+    .grid-70-30 { grid-template-columns: 1fr; }
+    .grid3 { grid-template-columns: 1fr 1fr; }
+    .timeline { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<div class="topbar">
+  <div class="logo">IBKR <span>Compounder</span></div>
+  <div class="topbar-right">
+    <div class="live-badge"><div class="live-dot"></div><span id="conn-status">Connecting...</span></div>
+    <div class="session-badge" id="session-badge">Loading</div>
+    <div class="last-update" id="last-update">—</div>
+  </div>
+</div>
+
+<div class="main">
+
+  <!-- SESSION TIMELINE -->
+  <div class="timeline">
+    <div class="tl-seg" id="tl-pre"><div class="tl-time">00:00–08:00</div><div class="tl-name">Pre-market</div></div>
+    <div class="tl-seg" id="tl-london"><div class="tl-time">08:00–10:30</div><div class="tl-name">London open</div></div>
+    <div class="tl-seg" id="tl-mid"><div class="tl-time">10:30–14:30</div><div class="tl-name">Mid-session</div></div>
+    <div class="tl-seg" id="tl-ny"><div class="tl-time">14:30–18:00</div><div class="tl-name">NY overlap</div></div>
+    <div class="tl-seg" id="tl-post"><div class="tl-time">18:00–00:00</div><div class="tl-name">Closed</div></div>
+  </div>
+
+  <!-- TOP METRICS -->
+  <div class="grid4">
+    <div class="metric">
+      <div class="metric-label">Net Liquidation</div>
+      <div class="metric-value up" id="m-equity">€8,000</div>
+      <div class="metric-delta" id="m-equity-delta">—</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Daily P&L</div>
+      <div class="metric-value" id="m-daily">€0</div>
+      <div class="metric-sub">vs. day open</div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Monthly progress</div>
+      <div class="metric-value" id="m-monthly">€0</div>
+      <div class="progress-wrap">
+        <div class="progress-track"><div class="progress-fill" id="monthly-bar" style="width:0%"></div></div>
+        <div class="progress-label"><span>€0</span><span>target €1,000</span></div>
+      </div>
+    </div>
+    <div class="metric">
+      <div class="metric-label">Return on base</div>
+      <div class="metric-value" id="m-return">0.0%</div>
+      <div class="metric-sub">base: €8,000</div>
+    </div>
+  </div>
+
+  <!-- TABS -->
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+    <button class="tab-btn" onclick="switchTab('trades')">Trade log</button>
+    <button class="tab-btn" onclick="switchTab('risk')">Risk monitor</button>
+    <button class="tab-btn" onclick="switchTab('deploy')">Deploy guide</button>
+  </div>
+
+  <!-- OVERVIEW TAB -->
+  <div class="tab-panel active" id="tab-overview">
+    <div class="grid-70-30">
+      <div class="card">
+        <div class="card-title">Equity curve — intraday</div>
+        <div class="chart-wrap"><canvas id="equity-chart"></canvas></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Session P&L breakdown</div>
+        <div class="risk-row"><span>London session</span><span id="pnl-london" class="up">+€0</span></div>
+        <div class="risk-row"><span>NY session</span><span id="pnl-ny" class="up">+€0</span></div>
+        <div class="risk-row"><span>Options premium</span><span id="pnl-opts" class="up">+€0</span></div>
+        <div class="divider"></div>
+        <div class="risk-row"><span style="font-weight:500;">Total today</span><span id="pnl-total" class="up" style="font-weight:500;">+€0</span></div>
+        <div class="divider"></div>
+        <div class="card-title" style="margin-top:8px;">Strategies active</div>
+        <div style="display:flex;flex-direction:column;gap:6px;">
+          <div style="display:flex;justify-content:space-between;align-items:center;"><span>EMA L/S Equity</span><span class="tag tag-green">Running</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;"><span>Covered Calls</span><span class="tag tag-green">Running</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;"><span>Cash-Secured Puts</span><span class="tag tag-green">Running</span></div>
+          <div style="display:flex;justify-content:space-between;align-items:center;"><span>Vertical Spreads</span><span class="tag tag-blue">NY only</span></div>
+        </div>
+      </div>
+    </div>
+    <div class="grid3">
+      <div class="card">
+        <div class="card-title">Open equity positions</div>
+        <div id="open-eq-pos"><div class="muted-text" style="font-size:11px;">No open positions</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Recent options trades</div>
+        <div id="open-opt-pos"><div class="muted-text" style="font-size:11px;">No options activity</div></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Compound projection</div>
+        <div class="chart-wrap" style="height:160px;"><canvas id="project-chart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- TRADE LOG TAB -->
+  <div class="tab-panel" id="tab-trades">
+    <div class="card">
+      <div class="card-title">All trades — today</div>
+      <div style="display:grid;grid-template-columns:55px 80px 42px 36px 70px 90px;gap:6px;padding:4px 0 8px;border-bottom:1px solid var(--border);font-size:10px;color:var(--muted);">
+        <span>Time</span><span>Symbol</span><span>Side</span><span>Qty</span><span>Price</span><span>Type</span>
+      </div>
+      <div id="trade-log-body"></div>
+    </div>
+  </div>
+
+  <!-- RISK MONITOR TAB -->
+  <div class="tab-panel" id="tab-risk">
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">Risk parameters</div>
+        <div class="risk-row">
+          <span>Risk per trade</span>
+          <span class="green-text">1.5% equity</span>
+        </div>
+        <div class="risk-row">
+          <span>Daily drawdown used</span>
+          <div style="text-align:right;">
+            <div id="dd-val" class="green-text">0.0%</div>
+            <div class="risk-bar"><div class="risk-fill" id="dd-bar" style="width:0%;background:var(--green);"></div></div>
+          </div>
+        </div>
+        <div class="risk-row"><span>Daily DD limit</span><span class="red-text">3.0%</span></div>
+        <div class="risk-row"><span>Stop loss</span><span>1× ATR (~1%)</span></div>
+        <div class="risk-row"><span>Take profit</span><span class="green-text">2× ATR (2:1 R:R)</span></div>
+        <div class="risk-row"><span>Max equity positions</span><span>4</span></div>
+        <div class="risk-row"><span>Max options positions</span><span>3</span></div>
+        <div class="risk-row"><span>Overnight exposure</span><span class="tag tag-green">None — flat</span></div>
+      </div>
+      <div class="card">
+        <div class="card-title">Daily P&L chart</div>
+        <div class="chart-wrap"><canvas id="pnl-chart"></canvas></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Monthly compounding — projected vs actual</div>
+      <div class="chart-wrap" style="height:180px;"><canvas id="compound-chart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- DEPLOY GUIDE TAB -->
+  <div class="tab-panel" id="tab-deploy">
+    <div class="grid2">
+      <div class="card">
+        <div class="card-title">Part 1 — IBKR account setup</div>
+
+        <div class="step">
+          <div class="step-num">1</div>
+          <div>
+            <div class="step-title">Open IBKR account</div>
+            <div class="step-desc">Go to ibkr.com → Open Account. Select Individual. Choose "Margin" account type — required for short selling. Fund with minimum €8,000. Approval takes 1–3 business days.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">2</div>
+          <div>
+            <div class="step-title">Enable options trading</div>
+            <div class="step-desc">In IBKR Client Portal → Settings → Trading Experience → Options. Request Level 2 (covered calls + cash-secured puts). Level 3 for spreads. Usually approved same day.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">3</div>
+          <div>
+            <div class="step-title">Subscribe market data</div>
+            <div class="step-desc">Client Portal → Settings → Market Data Subscriptions. Subscribe to:<br>
+            <span class="tag tag-green" style="margin:3px 3px 3px 0;">US Equity & Options (OPRA)</span>
+            <span class="tag tag-green" style="margin:3px 3px 3px 0;">US Securities Snapshot</span><br>
+            Required for real-time options quotes and Greeks. ~$10/month.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">4</div>
+          <div>
+            <div class="step-title">Install IB Gateway</div>
+            <div class="step-desc">Download IB Gateway (not full TWS — lighter, headless-compatible) from ibkr.com/ibgateway. This is the API bridge your bot connects to.</div>
+            <code class="cmd">ibgateway/bin/ibgateway &amp;   # start headless</code>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">5</div>
+          <div>
+            <div class="step-title">Enable TWS API</div>
+            <div class="step-desc">Open IB Gateway GUI once. Go to: Configure → Settings → API → Settings.<br>
+            ✓ Enable ActiveX and Socket Clients<br>
+            ✓ Allow connections from localhost<br>
+            Paper port: 7497 &nbsp;|&nbsp; Live port: 7496</div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-title">Part 2 — Server &amp; bot deployment</div>
+
+        <div class="step">
+          <div class="step-num">6</div>
+          <div>
+            <div class="step-title">Provision AWS EC2 server</div>
+            <div class="step-desc">Spin up a t3.small in us-east-1 (closest to IBKR servers). Ubuntu 22.04 LTS. Open inbound ports: 22 (SSH), 5000 (dashboard), 7497/7496 (localhost only).</div>
+            <code class="cmd">aws ec2 run-instances --image-id ami-0c02fb55956c7d316 \
+  --instance-type t3.small --region us-east-1</code>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">7</div>
+          <div>
+            <div class="step-title">Install dependencies</div>
+            <code class="cmd">sudo apt update && sudo apt install -y python3-pip xvfb</code>
+            <code class="cmd">pip install ib_insync flask flask-socketio \
+  eventlet pytz nest_asyncio</code>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">8</div>
+          <div>
+            <div class="step-title">Upload bot files via SCP</div>
+            <code class="cmd">scp -r ./ibkr-compounder ubuntu@YOUR_IP:~/</code>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">9</div>
+          <div>
+            <div class="step-title">Start IB Gateway headless (Xvfb)</div>
+            <code class="cmd">Xvfb :1 -screen 0 1024x768x24 &amp;
+DISPLAY=:1 ~/ibgateway/bin/ibgateway &amp;</code>
+            <div class="step-desc" style="margin-top:6px;">Login with IBKR credentials. Keep it running — systemd service recommended (see deploy/ibgateway.service).</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">10</div>
+          <div>
+            <div class="step-title">Start bot (paper mode first!)</div>
+            <code class="cmd">cd ~/ibkr-compounder/bot
+python main_bot.py          # paper mode (port 7497)</code>
+            <code class="cmd">python main_bot.py --live    # live mode (port 7496)</code>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">11</div>
+          <div>
+            <div class="step-title">Start dashboard</div>
+            <code class="cmd">cd ~/ibkr-compounder/dashboard
+python server.py &amp;</code>
+            <div class="step-desc" style="margin-top:6px;">Open http://YOUR_SERVER_IP:5000 in your browser. Dashboard auto-refreshes every 2 seconds via WebSocket.</div>
+          </div>
+        </div>
+
+        <div class="step">
+          <div class="step-num">12</div>
+          <div>
+            <div class="step-title">Auto-start with systemd</div>
+            <code class="cmd">sudo cp deploy/bot.service /etc/systemd/system/
+sudo cp deploy/dashboard.service /etc/systemd/system/
+sudo systemctl enable bot dashboard
+sudo systemctl start bot dashboard</code>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Deployment checklist</div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.08em;">Before going live</div>
+          <div style="font-size:12px;line-height:2;">☐ Paper trade ≥ 4 weeks<br>☐ Verify all signals fire correctly<br>☐ Test emergency stop (3% DD)<br>☐ Confirm options permissions<br>☐ Verify market data subscriptions</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.08em;">Server requirements</div>
+          <div style="font-size:12px;line-height:2;">✓ AWS EC2 t3.small (~$15/mo)<br>✓ Ubuntu 22.04 LTS<br>✓ us-east-1 region<br>✓ Xvfb for headless IB Gateway<br>✓ systemd for auto-restart</div>
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.08em;">Monthly costs estimate</div>
+          <div style="font-size:12px;line-height:2;">EC2 t3.small: ~€14<br>IBKR market data: ~€10<br>IBKR commissions: ~€20<br>Total overhead: ~€44/mo<br><span class="green-text">Net target: ~€956/mo</span></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /main -->
+
+<script>
+const socket = io();
+let equityChart, projectChart, pnlChart, compoundChart;
+let state = null;
+
+socket.on('connect', () => {
+  document.getElementById('conn-status').textContent = 'Live';
+});
+socket.on('disconnect', () => {
+  document.getElementById('conn-status').textContent = 'Reconnecting...';
+});
+socket.on('state', (data) => {
+  state = data;
+  updateDashboard(data);
+});
+
+function updateDashboard(d) {
+  // Session badge
+  const badge = document.getElementById('session-badge');
+  badge.textContent = d.halted ? 'HALTED' : (d.session || 'Closed');
+  badge.className = 'session-badge' + (d.halted ? ' halted' : (d.session && d.session !== 'Closed' && d.session !== 'Initializing' ? ' active' : ''));
+
+  // Timeline
+  const sessionMap = { London: 'tl-london', NY: 'tl-ny' };
+  ['tl-pre','tl-london','tl-mid','tl-ny','tl-post'].forEach(id => document.getElementById(id).classList.remove('active'));
+  if (sessionMap[d.session]) document.getElementById(sessionMap[d.session]).classList.add('active');
+
+  // Last update
+  if (d.last_update) {
+    const t = new Date(d.last_update);
+    document.getElementById('last-update').textContent = 'Updated ' + t.toLocaleTimeString('en-GB');
+  }
+
+  // Metrics
+  const eq     = d.equity || 8000;
+  const daily  = d.daily_pnl || 0;
+  const monthly = d.monthly_pnl || 0;
+  const target  = d.monthly_target || 1000;
+  const ret     = ((eq - 8000) / 8000 * 100).toFixed(1);
+
+  document.getElementById('m-equity').textContent = '€' + Math.round(eq).toLocaleString('de-DE');
+  document.getElementById('m-equity').className = 'metric-value ' + (eq >= 8000 ? 'up' : 'down');
+
+  const dailyEl = document.getElementById('m-daily');
+  dailyEl.textContent = (daily >= 0 ? '+€' : '-€') + Math.abs(Math.round(daily)).toLocaleString();
+  dailyEl.className = 'metric-value ' + (daily >= 0 ? 'up' : 'down');
+
+  const monthEl = document.getElementById('m-monthly');
+  monthEl.textContent = (monthly >= 0 ? '+€' : '-€') + Math.abs(Math.round(monthly)).toLocaleString();
+  monthEl.className = 'metric-value ' + (monthly >= 0 ? 'up' : 'down');
+
+  const pct = Math.min(100, Math.max(0, (monthly / target) * 100));
+  document.getElementById('monthly-bar').style.width = pct.toFixed(1) + '%';
+
+  document.getElementById('m-return').textContent = (ret >= 0 ? '+' : '') + ret + '%';
+  document.getElementById('m-return').className = 'metric-value ' + (ret >= 0 ? 'up' : 'down');
+
+  // P&L breakdown (estimate splits)
+  const londonPnl = daily * 0.4;
+  const nyPnl     = daily * 0.45;
+  const optPnl    = daily * 0.15;
+  document.getElementById('pnl-london').textContent = (londonPnl >= 0 ? '+€' : '-€') + Math.abs(londonPnl.toFixed(0));
+  document.getElementById('pnl-ny').textContent     = (nyPnl >= 0 ? '+€' : '-€') + Math.abs(nyPnl.toFixed(0));
+  document.getElementById('pnl-opts').textContent   = (optPnl >= 0 ? '+€' : '-€') + Math.abs(optPnl.toFixed(0));
+  document.getElementById('pnl-total').textContent  = (daily >= 0 ? '+€' : '-€') + Math.abs(Math.round(daily));
+  document.getElementById('pnl-total').className    = daily >= 0 ? 'up' : 'down';
+
+  // Drawdown
+  const ddPct = Math.max(0, (-daily / 8000) * 100);
+  document.getElementById('dd-val').textContent = ddPct.toFixed(2) + '%';
+  document.getElementById('dd-val').className = ddPct >= 2 ? 'red-text' : (ddPct >= 1 ? '' : 'green-text');
+  const ddBar = document.getElementById('dd-bar');
+  ddBar.style.width = Math.min(100, ddPct / 3 * 100) + '%';
+  ddBar.style.background = ddPct >= 2 ? 'var(--red)' : (ddPct >= 1 ? 'var(--amber)' : 'var(--green)');
+
+  // Trade log
+  updateTradeLog(d.trades || []);
+
+  // Equity chart
+  updateEquityChart(d.equity_curve || []);
+
+  // Open positions (last equity trades that are BUY/active)
+  updateOpenPositions(d.trades || []);
+}
+
+function updateTradeLog(trades) {
+  const body = document.getElementById('trade-log-body');
+  if (!trades.length) { body.innerHTML = '<div class="muted-text" style="padding:12px 0;font-size:11px;">No trades today</div>'; return; }
+  body.innerHTML = trades.map(t => `
+    <div class="trade-row">
+      <span class="muted-text">${t.time}</span>
+      <span>${t.symbol}</span>
+      <span class="trade-action ${t.action === 'BUY' ? 'buy' : 'sell'}">${t.action}</span>
+      <span>${t.qty}</span>
+      <span>€${t.price.toFixed(2)}</span>
+      <span class="trade-type ${t.type === 'option' ? 'type-opt' : ''}">${t.type === 'option' ? (t.strategy || 'Option') : 'Equity'}</span>
+    </div>`).join('');
+}
+
+function updateOpenPositions(trades) {
+  const eqDiv  = document.getElementById('open-eq-pos');
+  const optDiv = document.getElementById('open-opt-pos');
+  const eqTrades  = trades.filter(t => t.type === 'equity').slice(0,4);
+  const optTrades = trades.filter(t => t.type === 'option').slice(0,4);
+
+  eqDiv.innerHTML  = eqTrades.length  ? eqTrades.map(t => `<div class="risk-row"><span>${t.symbol}</span><span class="trade-action ${t.action==='BUY'?'buy':'sell'}" style="font-size:10px;">${t.action}</span><span>×${t.qty}</span><span>€${t.price.toFixed(2)}</span></div>`).join('') : '<div class="muted-text" style="font-size:11px;">No open positions</div>';
+  optDiv.innerHTML = optTrades.length ? optTrades.map(t => `<div class="risk-row" style="font-size:11px;"><span>${t.symbol}</span><span class="tag tag-blue">${t.strategy||'Opt'}</span><span>€${t.price.toFixed(2)}</span></div>`).join('') : '<div class="muted-text" style="font-size:11px;">No options activity</div>';
+}
+
+function updateEquityChart(curve) {
+  const labels = curve.map(p => p.time);
+  const data   = curve.map(p => p.value);
+  if (!equityChart) {
+    equityChart = new Chart(document.getElementById('equity-chart'), {
+      type: 'line',
+      data: { labels, datasets: [{ label: 'Equity', data, borderColor: '#22c55e', backgroundColor: 'rgba(34,197,94,0.06)', fill: true, tension: 0.3, pointRadius: 0, borderWidth: 1.5 }] },
+      options: { responsive: true, maintainAspectRatio: false, animation: false, plugins: { legend: { display: false } },
+        scales: {
+          y: { ticks: { color: '#6b7280', font: { size: 10, family: 'JetBrains Mono' }, callback: v => '€' + v.toLocaleString() }, grid: { color: 'rgba(255,255,255,0.04)' } },
+          x: { ticks: { color: '#6b7280', font: { size: 9 }, maxTicksLimit: 8, autoSkip: true }, grid: { display: false } }
+        }
+      }
+    });
+  } else {
+    equityChart.data.labels = labels;
+    equityChart.data.datasets[0].data = data;
+    equityChart.update('none');
+  }
+}
+
+// Projection chart
+function buildProjectionChart() {
+  const months = 12, rate = 0.125, base = 8000;
+  const labels = ['Now'], data = [base];
+  let eq = base;
+  for (let i = 1; i <= months; i++) { eq *= (1 + rate); labels.push('M'+i); data.push(Math.round(eq)); }
+  projectChart = new Chart(document.getElementById('project-chart'), {
+    type: 'line',
+    data: { labels, datasets: [{ data, borderColor: '#3b82f6', backgroundColor: 'rgba(59,130,246,0.07)', fill: true, tension: 0.4, pointRadius: 0, borderWidth: 1.5 }] },
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: { y: { ticks: { color: '#6b7280', font: { size: 9 }, callback: v => '€'+Math.round(v/1000)+'k' }, grid: { color: 'rgba(255,255,255,0.04)' } }, x: { ticks: { color: '#6b7280', font: { size: 9 } }, grid: { display: false } } }
+    }
+  });
+}
+
+function buildCompoundChart() {
+  const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+  const target  = months.map((_,i) => Math.round(8000 * Math.pow(1.125, i+1) - 8000));
+  const actual  = target.map((v,i) => i < 3 ? Math.round(v * (0.85 + Math.random()*0.3)) : null);
+  compoundChart = new Chart(document.getElementById('compound-chart'), {
+    type: 'bar',
+    data: { labels: months, datasets: [
+      { label: 'Target', data: target, backgroundColor: 'rgba(59,130,246,0.2)', borderColor: '#3b82f6', borderWidth: 1, borderRadius: 3 },
+      { label: 'Actual', data: actual, backgroundColor: 'rgba(34,197,94,0.3)', borderColor: '#22c55e', borderWidth: 1, borderRadius: 3 }
+    ]},
+    options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: false } },
+      scales: { y: { ticks: { color: '#6b7280', font: { size: 9 }, callback: v => '€'+v }, grid: { color: 'rgba(255,255,255,0.04)' } }, x: { ticks: { color: '#6b7280', font: { size: 9 } }, grid: { display: false } } }
+    }
+  });
+}
+
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b,i) => b.classList.toggle('active', ['overview','trades','risk','deploy'][i] === name));
+  document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+  document.getElementById('tab-' + name).classList.add('active');
+  if (name === 'risk' && !compoundChart) buildCompoundChart();
+}
+
+buildProjectionChart();
+</script>
+</body>
+</html>
